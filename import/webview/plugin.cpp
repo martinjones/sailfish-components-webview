@@ -17,8 +17,12 @@
 #include <QtCore/QStandardPaths>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtGui/QStyleHints>
+#include <QtGui/QMouseEvent>
 #include <QtQml/QQmlEngine>
 #include <QtQml/QQmlContext>
+#include <QtQuick/QQuickWindow>
+#include <private/qquickwindow_p.h>
 
 #define SAILFISHOS_WEBVIEW_MOZILLA_COMPONENTS_PATH QLatin1String("/usr/lib/mozembedlite/")
 
@@ -67,11 +71,206 @@ void SailfishOSWebViewPlugin::initializeEngine(QQmlEngine *engine, const char *u
 
 RawWebView::RawWebView(QQuickItem *parent)
     : QuickMozView(parent)
+    , m_flickable(0)
+    , m_startPos(-1.0, -1.0)
+    , m_bottomMargin(0)
 {
+    setFiltersChildMouseEvents(true);
 }
 
 RawWebView::~RawWebView()
 {
+}
+
+QQuickItem *RawWebView::flickable() const
+{
+    return m_flickable;
+}
+
+void RawWebView::setFlickable(QQuickItem *flickable)
+{
+    // TODO: currently unneeded
+    if (m_flickable != flickable) {
+        m_flickable = flickable;
+        if (m_flickable) {
+        }
+        emit flickableChanged();
+    }
+}
+
+qreal RawWebView::bottomMargin() const
+{
+    return m_bottomMargin;
+}
+
+void RawWebView::setBottomMargin(qreal margin)
+{
+    if (margin != m_bottomMargin) {
+        m_bottomMargin = margin;
+        QMargins margins;
+        margins.setBottom(m_bottomMargin);
+        setMargins(margins);
+        emit bottomMarginChanged();
+    }
+}
+
+int RawWebView::findTouch(int id) const
+{
+    auto it = std::find_if(m_touchPoints.begin(), m_touchPoints.end(), [id](const QTouchEvent::TouchPoint& tp) { return tp.id() == id; });
+    return it != m_touchPoints.end() ? it - m_touchPoints.begin() : -1;
+}
+
+void RawWebView::mouseUngrabEvent()
+{
+    qDebug() << "UNGRAB!!";
+}
+
+void RawWebView::touchEvent(QTouchEvent *event)
+{
+    qDebug() << "TOUCH" << event;
+    handleTouchEvent(event);
+    event->setAccepted(true);
+}
+
+void RawWebView::handleTouchEvent(QTouchEvent *event)
+{
+    if (event->type() == QEvent::TouchCancel) {
+        setKeepMouseGrab(false);
+        setKeepTouchGrab(false);
+        QuickMozView::touchEvent(event);
+        m_touchPoints.clear();
+        return;
+    }
+
+    QQuickWindow *win = window();
+    QQuickItem *grabber = win ? win->mouseGrabberItem() : 0;
+
+    if (grabber && grabber != this && grabber->keepMouseGrab()) {
+        if (!m_touchPoints.isEmpty()) {
+            QTouchEvent localEvent(QEvent::TouchCancel);
+            localEvent.setTouchPoints(m_touchPoints);
+            QuickMozView::touchEvent(&localEvent);
+            setKeepMouseGrab(false);
+            setKeepTouchGrab(false);
+            m_touchPoints.clear();
+        }
+        return;
+    }
+
+    Qt::TouchPointStates touchStates = 0;
+    QList<int> removedTouches;
+
+    const QList<QTouchEvent::TouchPoint> &touchPoints = event->touchPoints();
+    foreach (QTouchEvent::TouchPoint touchPoint, touchPoints) {
+
+        int touchIdx = findTouch(touchPoint.id());
+        if (touchIdx >= 0)
+            m_touchPoints[touchIdx] = touchPoint;
+
+        switch (touchPoint.state()) {
+        case Qt::TouchPointPressed:
+            if (touchIdx >= 0)
+                continue;
+            touchStates |= Qt::TouchPointPressed;
+            m_touchPoints.append(touchPoint);
+            if (m_touchPoints.count() > 1) {
+                setKeepMouseGrab(true);
+                setKeepTouchGrab(true);
+                grabMouse();
+                grabTouchPoints(QVector<int>() << touchPoint.id());
+            } else {
+                m_startPos = touchPoint.scenePos();
+                qDebug() << "TOUCH BEGIN" << m_startPos;
+                setKeepMouseGrab(false);
+                setKeepTouchGrab(false);
+            }
+            break;
+        // fall through
+        case Qt::TouchPointMoved: {
+            if (touchIdx < 0)
+                continue;
+            if (QQuickWindowPrivate::get(win)->touchMouseId == touchPoint.id()) {
+                const int dragThreshold = QGuiApplication::styleHints()->startDragDistance();
+                QPointF delta = touchPoint.scenePos() - m_startPos;
+                if (!keepMouseGrab()) {
+                    qDebug() << "PAST THRESH" << delta.y() << atYBeginning() << atYEnd();
+                    if ((delta.y() >= dragThreshold && !atYBeginning()) || (delta.y() <= -dragThreshold && !atYEnd())
+                            || (delta.x() >= dragThreshold && !atXBeginning()) || (delta.x() <= -dragThreshold && !atXEnd())) {
+                        setKeepMouseGrab(true);
+                        setKeepTouchGrab(true);
+                        grabMouse();
+                        grabTouchPoints(QVector<int>() << touchPoint.id());
+                        qDebug() << "I WANT THE GRAB";
+                    }
+                    // Do not pass this event through
+                    bool keeping = grabber ? grabber->keepMouseGrab() : false;
+                    qDebug() << "***********************************************************" << grabber << keeping;
+                    return;
+                } else if (grabber && grabber != this && grabber->keepMouseGrab()) {
+                    qDebug() << "Don't have grab - ignore";
+                    m_touchPoints.removeAt(touchIdx);
+                    event->ignore();
+                    return;
+                }
+            }
+            touchStates |= Qt::TouchPointMoved;
+            break;
+        }
+        case Qt::TouchPointReleased: {
+            qDebug() << "TOUCH: END";
+            touchStates |= Qt::TouchPointReleased;
+            removedTouches << touchPoint.id();
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+
+    QTouchEvent localEvent(*event);
+    localEvent.setTouchPoints(m_touchPoints);
+    localEvent.setTouchPointStates(touchStates);
+    QuickMozView::touchEvent(&localEvent);
+    event->setAccepted(localEvent.isAccepted());
+
+    foreach (int id, removedTouches) {
+        int touchIdx = findTouch(id);
+        if (touchIdx >= 0) {
+            qDebug() << "REMOVED TOUCH" << touchIdx << id;
+            m_touchPoints.removeAt(touchIdx);
+        }
+    }
+
+    qDebug() << "<<<<<<<<<<<<<< TOUCH COUNT" << m_touchPoints.count() << touchStates;
+
+    if (m_touchPoints.isEmpty()) {
+        qDebug() << "----------------------- ALL CLEAR ----------------------";
+        setKeepMouseGrab(false);
+        setKeepTouchGrab(false);
+    }
+}
+
+bool RawWebView::childMouseEventFilter(QQuickItem *i, QEvent *e)
+{
+    if (!isVisible())
+        return QQuickItem::childMouseEventFilter(i, e);
+    switch (e->type()) {
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+        qDebug() << "FILTERING" << e;
+        handleTouchEvent(static_cast<QTouchEvent*>(e));
+        e->setAccepted(keepMouseGrab());
+        return keepMouseGrab();
+    case QEvent::TouchEnd:
+        qDebug() << "FILTERING" << e;
+        handleTouchEvent(static_cast<QTouchEvent*>(e));
+        break;
+    default:
+        break;
+    }
+
+    return QQuickItem::childMouseEventFilter(i, e);
 }
 
 } // namespace WebView

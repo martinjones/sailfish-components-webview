@@ -7,7 +7,7 @@ MODULENAME = Sailfish/WebView
 TARGETPATH = $$[QT_INSTALL_QML]/$$MODULENAME
 
 CONFIG += qt link_pkgconfig plugin
-QT += core qml quick
+QT += core qml quick quick-private
 PKGCONFIG += qt5embedwidget
 
 QMAKE_CXXFLAGS += -fPIC
@@ -17,11 +17,11 @@ LIBS += -L../../lib -lsailfishwebengine
 
 HEADERS += plugin.h
 SOURCES += plugin.cpp
-OTHER_FILES += qmldir WebView.qml WebViewFlickable.qml WebViewPage.qml
+OTHER_FILES += qmldir WebView.qml WebViewFlickable.qml
 
 include(translations.pri)
 
-import.files = qmldir WebView.qml WebViewFlickable.qml WebViewPage.qml
+import.files = qmldir WebView.qml WebViewFlickable.qml
 import.path = $$TARGETPATH
 target.path = $$TARGETPATH
 

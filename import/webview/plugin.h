@@ -38,10 +38,38 @@ public:
 class RawWebView : public QuickMozView
 {
     Q_OBJECT
+    Q_PROPERTY(QQuickItem *flickable READ flickable WRITE setFlickable NOTIFY flickableChanged FINAL)
+    Q_PROPERTY(qreal bottomMargin READ bottomMargin WRITE setBottomMargin NOTIFY bottomMarginChanged)
 
 public:
     RawWebView(QQuickItem *parent = 0);
     ~RawWebView();
+
+    QQuickItem *flickable() const;
+    void setFlickable(QQuickItem *flickable);
+
+    qreal bottomMargin() const;
+    void setBottomMargin(qreal margin);
+
+protected:
+    void mouseUngrabEvent();
+
+    void handleTouchEvent(QTouchEvent *event);
+
+    void touchEvent(QTouchEvent *event);
+    bool childMouseEventFilter(QQuickItem *i, QEvent *e);
+
+Q_SIGNALS:
+    void flickableChanged();
+    void bottomMarginChanged();
+
+private:
+    int findTouch(int id) const;
+
+    QQuickItem *m_flickable;
+    QPointF m_startPos;
+    qreal m_bottomMargin;
+    QList<QTouchEvent::TouchPoint> m_touchPoints;
 };
 
 // using custom translator so it gets properly removed from qApp when engine is deleted
